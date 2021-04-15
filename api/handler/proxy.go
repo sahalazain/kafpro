@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"strconv"
+
 	"github.com/gofiber/fiber/v2"
 
 	"github.com/sahalazain/go-common/logger"
@@ -36,8 +38,18 @@ func Get(app service.App) func(*fiber.Ctx) error {
 		log := logger.GetLoggerContext(ctx, "handler", "Get")
 		topic := c.Params("topic")
 		group := c.Params("group")
+		max := c.Query("max")
 
-		out, err := app.RetrieveMessage(ctx, topic, group)
+		m := 1
+
+		if max != "" {
+			i, _ := strconv.Atoi(max)
+			if i > 0 {
+				m = i
+			}
+		}
+
+		out, err := app.BulkRetrieve(ctx, topic, group, m)
 		if err != nil {
 			log.WithError(err).Error("Error retrieving message")
 			return helper.Error(c, fiber.ErrBadGateway, err.Error())

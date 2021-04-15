@@ -20,6 +20,7 @@ const keyName = "key"
 type App interface {
 	SendMessage(ctx context.Context, topic, key string, payload interface{}) error
 	RetrieveMessage(ctx context.Context, topic, group string) (map[string]interface{}, error)
+	BulkRetrieve(ctx context.Context, topic, group string, max int) ([]map[string]interface{}, error)
 }
 
 func GetService(conf config.Getter) (App, error) {
@@ -39,6 +40,7 @@ type PubsubService struct {
 	pubs    map[string]*pubsub.Topic
 	subs    map[string]*pubsub.Subscription
 	Config  config.Getter
+	timeout int
 }
 
 func NewPubsubService(conf config.Getter) (*PubsubService, error) {
@@ -47,12 +49,18 @@ func NewPubsubService(conf config.Getter) (*PubsubService, error) {
 		return nil, errors.New("missing kafka_brokers config")
 	}
 
+	to := conf.GetInt("read_timeout")
+	if to == 0 {
+		to = defaultTimeout
+	}
+
 	os.Setenv("KAFKA_BROKERS", kb)
 	return &PubsubService{
 		brokers: strings.Split(kb, ","),
 		Config:  conf,
 		pubs:    make(map[string]*pubsub.Topic),
 		subs:    make(map[string]*pubsub.Subscription),
+		timeout: to,
 	}, nil
 }
 
@@ -79,6 +87,40 @@ func (a *PubsubService) SendMessage(ctx context.Context, topic, key string, payl
 	return nil
 }
 
+func (a *PubsubService) BulkRetrieve(ctx context.Context, topic, group string, max int) ([]map[string]interface{}, error) {
+	log := logger.GetLoggerContext(ctx, "service", "BulkRetrieve")
+
+	sub, err := a.getSub(ctx, topic, group)
+	if err != nil {
+		return nil, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(a.timeout)*time.Second)
+	defer cancel()
+	outs := make([]map[string]interface{}, 0)
+	for i := 0; i < max; i++ {
+		msg, err := sub.Receive(ctx)
+		if err != nil {
+			if err == context.DeadlineExceeded && len(outs) > 0 {
+				return outs, nil
+			}
+			log.WithError(err).Error("error retrieving message")
+			return nil, err
+		}
+
+		var out map[string]interface{}
+		if err := json.Unmarshal(msg.Body, &out); err != nil {
+			log.WithError(err).Error("error unmarshal")
+			return nil, err
+		}
+
+		msg.Ack()
+		outs = append(outs, out)
+	}
+
+	return outs, nil
+}
+
 func (a *PubsubService) RetrieveMessage(ctx context.Context, topic, group string) (map[string]interface{}, error) {
 	log := logger.GetLoggerContext(ctx, "service", "RetrieveMessage")
 
@@ -89,7 +131,7 @@ func (a *PubsubService) RetrieveMessage(ctx context.Context, topic, group string
 
 	//defer sub.Shutdown(ctx)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(10*time.Second))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(a.timeout)*time.Second)
 	defer cancel()
 	msg, err := sub.Receive(ctx)
 	if err != nil {
@@ -128,7 +170,7 @@ func (a *PubsubService) getPub(ctx context.Context, topic string) (*pubsub.Topic
 
 func (a *PubsubService) getSub(ctx context.Context, topic, group string) (*pubsub.Subscription, error) {
 
-	if s, ok := a.subs[topic]; ok {
+	if s, ok := a.subs[topic+group]; ok {
 		return s, nil
 	}
 
@@ -139,6 +181,6 @@ func (a *PubsubService) getSub(ctx context.Context, topic, group string) (*pubsu
 		return nil, err
 	}
 
-	a.subs[topic] = sub
+	a.subs[topic+group] = sub
 	return sub, nil
 }

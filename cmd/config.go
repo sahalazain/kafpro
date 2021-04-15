@@ -11,4 +11,5 @@ var DefaultConfig = map[string]interface{}{
 	"jaeger_url":      "http://localhost:14268/api/traces",
 	"kafka_brokers":   "localhost:9092",
 	"service_type":    "kafka",
+	"read_timeout":    10,
 }
